@@ -1,5 +1,6 @@
 ﻿
 using AutoMapper;
+using CourseLibrary.API.Entities;
 using CourseLibrary.API.Helpers;
 using CourseLibrary.API.Models;
 using CourseLibrary.API.ResourceParameters;
@@ -16,15 +17,18 @@ public class AuthorsController : ControllerBase
 {
     private readonly ICourseLibraryRepository _courseLibraryRepository;
     private readonly IMapper _mapper;
+    private readonly IPropertyMappingService _propertyMappingService;
 
     public AuthorsController(
         ICourseLibraryRepository courseLibraryRepository,
-        IMapper mapper)
+        IMapper mapper,
+        IPropertyMappingService propertyMappingService)
     {
         _courseLibraryRepository = courseLibraryRepository ??
             throw new ArgumentNullException(nameof(courseLibraryRepository));
         _mapper = mapper ??
             throw new ArgumentNullException(nameof(mapper));
+        _propertyMappingService = propertyMappingService ?? throw new ArgumentNullException(nameof(propertyMappingService));
     }
 
     [HttpGet(Name = "GetAuthors")]
@@ -32,20 +36,26 @@ public class AuthorsController : ControllerBase
     public async Task<ActionResult<IEnumerable<AuthorDto>>> GetAuthors([FromQuery] AuthorsResourceParameters authorsResourceParameters)
     {
         // throw new Exception("Test Exception");
+
+        if(!_propertyMappingService.ValidMappingExistsFor<AuthorDto, Author>(authorsResourceParameters.OrderBy))
+        {
+            return BadRequest();
+        }
+
         // get authors from repo
         var authorsFromRepo = await _courseLibraryRepository
             .GetAuthorsAsync(authorsResourceParameters);
 
         var previousPageLink = authorsFromRepo.HasPrevious
-            ? CreateAuthorsResourceUri(authorsResourceParameters, ResourceUriType.PreviousPage) 
+            ? CreateAuthorsResourceUri(authorsResourceParameters, ResourceUriType.PreviousPage)
             : null;
 
         var nextPageLink = authorsFromRepo.HasNext
            ? CreateAuthorsResourceUri(authorsResourceParameters, ResourceUriType.NextPage)
            : null;
 
-        var paginationMetadata = new 
-        { 
+        var paginationMetadata = new
+        {
             totalCount = authorsFromRepo.TotalCount,
             pageSize = authorsFromRepo.PageSize,
             currentPage = authorsFromRepo.CurrentPage,
@@ -67,6 +77,7 @@ public class AuthorsController : ControllerBase
             case ResourceUriType.PreviousPage:
                 return Url.Link("GetAuthors", new
                 {
+                    orderBy = authorsResourceParameters.OrderBy,
                     pageNumber = authorsResourceParameters.PageNumber - 1,
                     pageSize = authorsResourceParameters.PageSize,
                     mainCategory = authorsResourceParameters.MainCategory,
@@ -75,6 +86,7 @@ public class AuthorsController : ControllerBase
             case ResourceUriType.NextPage:
                 return Url.Link("GetAuthors", new
                 {
+                    orderBy = authorsResourceParameters.OrderBy,
                     pageNumber = authorsResourceParameters.PageNumber + 1,
                     pageSize = authorsResourceParameters.PageSize,
                     mainCategory = authorsResourceParameters.MainCategory,
@@ -83,6 +95,7 @@ public class AuthorsController : ControllerBase
             default:
                 return Url.Link("GetAuthors", new
                 {
+                    orderBy = authorsResourceParameters.OrderBy,
                     pageNumber = authorsResourceParameters.PageNumber,
                     pageSize = authorsResourceParameters.PageSize,
                     mainCategory = authorsResourceParameters.MainCategory,
