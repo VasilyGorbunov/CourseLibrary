@@ -6,6 +6,8 @@ using CourseLibrary.API.Models;
 using CourseLibrary.API.ResourceParameters;
 using CourseLibrary.API.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.Net.Http.Headers;
 using System.Dynamic;
 using System.Text.Json;
 
@@ -19,17 +21,22 @@ public class AuthorsController : ControllerBase
     private readonly ICourseLibraryRepository _courseLibraryRepository;
     private readonly IMapper _mapper;
     private readonly IPropertyMappingService _propertyMappingService;
+    private readonly IPropertyCheckerService _propertyCheckerService;
+    private readonly ProblemDetailsFactory _problemDetailsFactory;
+
 
     public AuthorsController(
         ICourseLibraryRepository courseLibraryRepository,
         IMapper mapper,
-        IPropertyMappingService propertyMappingService)
+        IPropertyMappingService propertyMappingService,
+        IPropertyCheckerService propertyCheckerService,
+        ProblemDetailsFactory problemDetailsFactory)
     {
-        _courseLibraryRepository = courseLibraryRepository ??
-            throw new ArgumentNullException(nameof(courseLibraryRepository));
-        _mapper = mapper ??
-            throw new ArgumentNullException(nameof(mapper));
+        _courseLibraryRepository = courseLibraryRepository ?? throw new ArgumentNullException(nameof(courseLibraryRepository));
+        _mapper = mapper ?? throw new ArgumentNullException(nameof(mapper));
         _propertyMappingService = propertyMappingService ?? throw new ArgumentNullException(nameof(propertyMappingService));
+        _propertyCheckerService = propertyCheckerService ?? throw new ArgumentNullException(nameof(propertyCheckerService));
+        _problemDetailsFactory = problemDetailsFactory ?? throw new ArgumentNullException(nameof(problemDetailsFactory));
     }
 
     [HttpGet(Name = "GetAuthors")]
@@ -38,9 +45,9 @@ public class AuthorsController : ControllerBase
     {
         // throw new Exception("Test Exception");
 
-       
 
-        if(!_propertyMappingService.ValidMappingExistsFor<AuthorDto, Author>(authorsResourceParameters.OrderBy))
+
+        if (!_propertyMappingService.ValidMappingExistsFor<AuthorDto, Author>(authorsResourceParameters.OrderBy))
         {
             return BadRequest();
         }
@@ -72,7 +79,8 @@ public class AuthorsController : ControllerBase
             return authorAsDictionary;
         });
 
-        var linkCollectionResource = new {
+        var linkCollectionResource = new
+        {
             value = shapedAuthorsWithLinks,
             links = links
         };
@@ -120,9 +128,32 @@ public class AuthorsController : ControllerBase
         }
     }
 
+    [Produces("application/json",
+        "application/vnd.marvin.hateoas+json",
+        "application/vnd.marvin.author.full+json",
+        "application/vnd.marvin.author.full.hateoas+json",
+        "application/vnd.marvin.author.friendly+json",
+        "application/vnd.marvin.author.friendly.hateoas+json")]
     [HttpGet("{authorId}", Name = "GetAuthor")]
-    public async Task<IActionResult> GetAuthor(Guid authorId, string? fields)
+    public async Task<IActionResult> GetAuthor(Guid authorId,
+        string? fields,
+        [FromHeader(Name = "Accept")] string? mediaType)
     {
+
+        if (!MediaTypeHeaderValue.TryParse(mediaType, out var parsedMediaType))
+        {
+            return BadRequest(_problemDetailsFactory.CreateProblemDetails(HttpContext,
+                statusCode: 400,
+                detail: $"Accept header media type value is not a valid media type."));
+        }
+
+        if (!_propertyCheckerService.TypeHasProperties<AuthorDto>(fields))
+        {
+            return BadRequest(_problemDetailsFactory.CreateProblemDetails(HttpContext,
+                statusCode: 400,
+                detail: $"Not all requested data shaping fields exist on the resource {fields}"));
+        }
+
         // get author from repo
         var authorFromRepo = await _courseLibraryRepository.GetAuthorAsync(authorId);
 
@@ -131,25 +162,54 @@ public class AuthorsController : ControllerBase
             return NotFound();
         }
 
-        var links = CreateLinksForAuthor(authorId, fields);
+        var includeLinks = parsedMediaType.SubTypeWithoutSuffix.EndsWith("hateoas", StringComparison.InvariantCultureIgnoreCase);
+        IEnumerable<LinkDto> links = new List<LinkDto>();
 
-        var linkedResourceToReturn = _mapper.Map<AuthorDto>(authorFromRepo).ShapeData(fields) as IDictionary<string, object?>;
-        linkedResourceToReturn.Add("links", links);
+        if (includeLinks)
+        {
+            links = CreateLinksForAuthor(authorId, fields);
+        }
 
-        // return author
-        return Ok(linkedResourceToReturn);
+        var primaryMediaType = includeLinks
+            ? parsedMediaType.SubTypeWithoutSuffix.Substring(0, parsedMediaType.SubTypeWithoutSuffix.Length - 8)
+            : parsedMediaType.SubTypeWithoutSuffix;
+
+        if (primaryMediaType == "vnd.marvin.author.full")
+        {
+            var fullResourceToReturn = _mapper.Map<AuthorFullDto>(authorFromRepo)
+                .ShapeData(fields) as IDictionary<string, object?>;
+
+            if (includeLinks)
+            {
+                fullResourceToReturn.Add("links", links);
+            }
+
+            return Ok(fullResourceToReturn);
+        }
+
+
+        var friendlyResourceToReturn = _mapper.Map<AuthorDto>(authorFromRepo)
+                .ShapeData(fields) as IDictionary<string, object?>;
+
+        if (includeLinks)
+        {
+            friendlyResourceToReturn.Add("links", links);
+        }
+
+        return Ok(friendlyResourceToReturn);
+
     }
 
     private IEnumerable<LinkDto> CreateLinksForAuthor(Guid authorId, string? fileds)
     {
         var links = new List<LinkDto>();
 
-        if(string.IsNullOrWhiteSpace(fileds))
+        if (string.IsNullOrWhiteSpace(fileds))
         {
             links.Add(
                 new(Url.Link("GetAuthor", new { authorId }),
                 "self",
-                "GET"));  
+                "GET"));
         }
         else
         {
@@ -185,7 +245,7 @@ public class AuthorsController : ControllerBase
             "self",
             "GET"));
 
-        if(hasNext)
+        if (hasNext)
         {
             links.Add(new(CreateAuthorsResourceUri(authorsResourceParameters, ResourceUriType.NextPage),
                 "nextPage",
